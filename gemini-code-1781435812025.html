@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Solid Tech-Polar Icon Generator</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #121214;
+            color: #e3e3e6;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .container {
+            text-align: center;
+            background: #1a1a1e;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        }
+        input {
+            background: #26262b;
+            border: 2px solid #3a3a42;
+            color: #fff;
+            padding: 10px 16px;
+            font-size: 16px;
+            border-radius: 8px;
+            width: 280px;
+            outline: none;
+            margin-bottom: 20px;
+        }
+        input:focus {
+            border-color: #6366f1;
+        }
+        .output-area {
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+        }
+        svg {
+            background: #1a1a1e;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        .debug-info {
+            font-family: monospace;
+            font-size: 12px;
+            color: #8a8a93;
+            max-width: 440px;
+            word-wrap: break-word;
+            text-align: left;
+            background: #222227;
+            padding: 12px;
+            border-radius: 8px;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Solid Polar Icon Generator</h2>
+    <input type="text" id="textInput" placeholder="文字を入力してください..." value="Solid Pro Design">
+    
+    <div class="output-area">
+        <div id="svgContainer"></div>
+        <div class="debug-info" id="debugInfo"></div>
+    </div>
+</div>
+
+<script>
+async function computeSHA512(message) {
+    const msgBuffer = new TextEncoder().encode(message);
+    const hashBuffer = await crypto.subtle.digest('SHA-512', msgBuffer);
+    return new Uint8Array(hashBuffer);
+}
+
+function get64ColorPalette(index) {
+    let hue = (index % 64) * 5.625;
+    let s = 70; // ギラつきすぎないように彩度を少し落ち着かせる
+    let l = 52; // ソリッドで見栄えのする明度
+    if (hue >= 40 && hue <= 80) { l = 44; s = 80; } 
+    if (hue >= 220 && hue <= 260) { l = 58; }       
+    return `hsl(${Math.round(hue)}, ${s}%, ${l}%)`;
+}
+
+function createSectorPath(cx, cy, rIn, rOut, startAngle, endAngle) {
+    // ソリッド描画時のブラウザのアンチエイリアス隙間を完全に潰すため、僅かにオーバーラップさせる
+    const buffer = 0.2; 
+    const sAng = startAngle - buffer;
+    const eAng = endAngle + buffer;
+
+    const degToRad = Math.PI / 180;
+    const sRad = sAng * degToRad;
+    const eRad = eAng * degToRad;
+
+    const x1_in = cx + rIn * Math.cos(sRad);
+    const y1_in = cy + rIn * Math.sin(sRad);
+    const x2_in = cx + rIn * Math.cos(eRad);
+    const y2_in = cy + rIn * Math.sin(eRad);
+
+    const x1_out = cx + rOut * Math.cos(sRad);
+    const y1_out = cy + rOut * Math.sin(sRad);
+    const x2_out = cx + rOut * Math.cos(eRad);
+    const y2_out = cy + rOut * Math.sin(eRad);
+
+    const largeArc = (endAngle - startAngle) > 180 ? 1 : 0;
+
+    let d = `M ${x1_out} ${y1_out} `;
+    d += `A ${rOut} ${rOut} 0 ${largeArc} 1 ${x2_out} ${y2_out} `;
+    d += `L ${x2_in} ${y2_in} `;
+    if (rIn > 0) {
+        d += `A ${rIn} ${rIn} 0 ${largeArc} 0 ${x1_in} ${y1_in} `;
+    }
+    d += 'Z';
+    return d;
+}
+
+function createLinePath(cx, cy, rIn, rOut, angle) {
+    const rad = angle * (Math.PI / 180);
+    const x1 = cx + rIn * Math.cos(rad);
+    const y1 = cy + rIn * Math.sin(rad);
+    const x2 = cx + rOut * Math.cos(rad);
+    const y2 = cy + rOut * Math.sin(rad);
+    return `M ${x1} ${y1} L ${x2} ${y2}`;
+}
+
+async function generateIcon() {
+    const text = document.getElementById('textInput').value;
+    const bytes = await computeSHA512(text);
+
+    const ring1HueIdx = bytes[0] % 64;
+    const ring2HueIdx = bytes[1] % 64;
+    const ring3HueIdx = bytes[2] % 64;
+    const ring4HueIdx = bytes[3] % 64;
+
+    const colorMode = bytes[4] & 0x03; 
+    const globalRotateIdx = (bytes[4] >> 2) & 0x3F; 
+    
+    const r1Idx = bytes[5] & 0x0F; 
+    const r2Idx = (bytes[5] >> 4) & 0x0F; 
+    const r3Idx = bytes[6] & 0x0F;
+    const geoStyleIdx = (bytes[6] >> 4) & 0x0F;
+
+    const ringColors = [
+        get64ColorPalette(ring1HueIdx),
+        get64ColorPalette(ring2HueIdx),
+        get64ColorPalette(ring3HueIdx),
+        get64ColorPalette(ring4HueIdx)
+    ];
+
+    if (colorMode === 1) {
+        ringColors[1] = ringColors[0]; ringColors[3] = ringColors[2];
+    } else if (colorMode === 2) {
+        ringColors[1] = get64ColorPalette(ring1HueIdx + 4);
+        ringColors[2] = get64ColorPalette(ring1HueIdx + 8);
+        ringColors[3] = get64ColorPalette(ring1HueIdx + 12);
+    }
+
+    const rotateAngle = globalRotateIdx * (90 / 64);
+    
+    const r1 = 15 + (r1Idx * (5 / 15)); 
+    const r2 = r1 + 20 + (r2Idx * (10 / 15)); 
+    const r3 = r2 + 20 + (r3Idx * (10 / 15)); 
+    const r4 = 100;
+
+    const isDonut = (geoStyleIdx & 1) === 1;
+
+    const size = 300;
+    const center = size / 2;
+    const rad1 = 140 * (r1 / 100);
+    const rad2 = 140 * (r2 / 100);
+    const rad3 = 140 * (r3 / 100);
+    const rad4 = 140 * (r4 / 100);
+
+    let svgContent = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">`;
+    svgContent += `<rect width="100%" height="100%" fill="#131316"/>`;
+    svgContent += `<g transform="translate(${center}, ${center}) rotate(${rotateAngle})">`;
+
+    const layer1Mask = bytes.slice(8, 16);
+    const layer2Mask = bytes.slice(16, 24);
+
+    // --- 第1リング (4分割) ---
+    const rIn1 = isDonut ? rad1 * 0.4 : 0;
+    const p1_angles = [
+        {s: -135, e: -45, bit: 0}, {s: 45, e: 135, bit: 1},
+        {s: 135, e: 225, bit: 2}, {s: -45, e: 45, bit: 2}
+    ];
+    p1_angles.forEach(p => {
+        const isHit = (layer1Mask[Math.floor(p.bit/8)] & (1 << (p.bit%8))) !== 0;
+        if (isHit) {
+            svgContent += `<path d="${createSectorPath(0, 0, rIn1, rad1, p.s, p.e)}" fill="${ringColors[0]}" />`;
+        } else {
+            svgContent += `<path d="${createLinePath(0, 0, rIn1, rad1, p.s)}" stroke="${ringColors[0]}" stroke-width="4" stroke-dasharray="6,4" />`;
+        }
+    });
+
+    // --- 第2リング (16分割) ---
+    for (let i = 0; i < 16; i++) {
+        let angleStart = -180 + (i * 22.5); let angleEnd = angleStart + 22.5;
+        let logicalBit = (i <= 8) ? i : (16 - i);
+        const isHit = (layer2Mask[Math.floor(logicalBit/8)] & (1 << (logicalBit%8))) !== 0;
+        
+        if (isHit) {
+            svgContent += `<path d="${createSectorPath(0, 0, rad1, rad2, angleStart, angleEnd)}" fill="${ringColors[1]}" />`;
+        } else {
+            svgContent += `<path d="M ${rad2 * Math.cos(angleStart * Math.PI / 180)} ${rad2 * Math.sin(angleStart * Math.PI / 180)} A ${rad2} ${rad2} 0 0 1 ${rad2 * Math.cos(angleEnd * Math.PI / 180)} ${rad2 * Math.sin(angleEnd * Math.PI / 180)}" stroke="${ringColors[1]}" stroke-width="3" fill="none" />`;
+        }
+    }
+
+    // --- 第3リング (32分割) ---
+    let r3HitCount = 0;
+    let r3Elements = "";
+    for (let i = 0; i < 32; i++) {
+        let angleStart = -180 + (i * 11.25); let angleEnd = angleStart + 11.25;
+        let logicalBit = (i <= 16) ? i : (32 - i);
+        let actualBit = logicalBit + 10; 
+        const isHit = (layer1Mask[Math.floor(actualBit/8)] & (1 << (actualBit%8))) !== 0;
+
+        if (isHit) {
+            r3HitCount++;
+            r3Elements += `<path d="${createSectorPath(0, 0, rad2, rad3, angleStart, angleEnd)}" fill="${ringColors[2]}" />`;
+        } else {
+            r3Elements += `<path d="${createLinePath(0, 0, rad2, rad3, angleStart)}" stroke="${ringColors[2]}" stroke-width="2.5" />`;
+        }
+    }
+    if (r3HitCount <= 4) {
+        for (let i = 0; i < 32; i += 2) {
+            let ang = -180 + (i * 11.25) + 5.625;
+            let radMid = (rad2 + rad3) / 2;
+            r3Elements += `<circle cx="${radMid * Math.cos(ang * Math.PI / 180)}" cy="${radMid * Math.sin(ang * Math.PI / 180)}" r="5" fill="${ringColors[2]}" />`;
+        }
+    }
+    svgContent += r3Elements;
+
+    // --- 第4リング (48分割) ---
+    let r4HitCount = 0;
+    let r4Elements = "";
+    for (let i = 0; i < 48; i++) {
+        let angleStart = -180 + (i * 7.5); let angleEnd = angleStart + 7.5;
+        let logicalBit = (i <= 24) ? i : (48 - i);
+        let actualBit = logicalBit + 15;
+        const isHit = (layer2Mask[Math.floor(actualBit/8)] & (1 << (actualBit%8))) !== 0;
+
+        if (isHit) {
+            r4HitCount++;
+            r4Elements += `<path d="${createSectorPath(0, 0, rad3, rad4, angleStart, angleEnd)}" fill="${ringColors[3]}" />`;
+        } else {
+            if (i % 2 === 0) {
+                r4Elements += `<path d="${createLinePath(0, 0, rad3, rad4, angleStart)}" stroke="${ringColors[3]}" stroke-width="2" />`;
+            }
+        }
+    }
+    if (r4HitCount <= 6) {
+        for (let i = 0; i < 48; i += 3) {
+            let ang = -180 + (i * 7.5);
+            r4Elements += `<circle cx="${rad4 * Math.cos(ang * Math.PI / 180)}" cy="${rad4 * Math.sin(ang * Math.PI / 180)}" r="3.5" fill="${ringColors[3]}" />`;
+        }
+    }
+    svgContent += r4Elements;
+
+    svgContent += `</g></svg>`;
+    document.getElementById('svgContainer').innerHTML = svgContent;
+
+    document.getElementById('debugInfo').innerHTML = `
+        <strong>[Solid Design Connected]</strong><br>
+        Opacity: 1.0 (重なり・濁りの完全排除)<br>
+        Global Rotate: ${rotateAngle.toFixed(2)}°
+    `;
+}
+
+document.getElementById('textInput').addEventListener('input', generateIcon);
+generateIcon();
+</script>
+
+</body>
+</html>

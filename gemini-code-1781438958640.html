@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>512bit Organic SVG Icon Generator - Extended</title>
+    <style>
+        body {
+            background: #121212;
+            color: #e0e0e0;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .container {
+            text-align: center;
+            background: #1e1e1e;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            width: 420px;
+        }
+        .svg-container {
+            background: #121212;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            width: 400px;
+            height: 400px;
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .control-group {
+            margin-bottom: 15px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+        select, input {
+            padding: 12px;
+            border: 2px solid #333;
+            background: #2a2a2a;
+            color: #fff;
+            border-radius: 8px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        input { flex: 1; text-align: center; }
+        select { cursor: pointer; }
+        select:focus, input:focus { border-color: #555; }
+        .debug-info {
+            margin-top: 15px;
+            font-family: monospace;
+            font-size: 11px;
+            color: #888;
+            word-wrap: break-word;
+            text-align: left;
+            background: #121212;
+            padding: 10px;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="svg-container" id="svgWrapper"></div>
+    
+    <div class="control-group">
+        <select id="algoSelect">
+            <option value="SHA-512">SHA-512 (512bit)</option>
+            <option value="SHA-256">SHA-256 (256bit/ループ)</option>
+            <option value="Seed-LCG">Fast LCG (32bitシード拡張)</option>
+        </select>
+    </div>
+    <div class="control-group">
+        <input type="text" id="inputText" value="rorschach-test-512" placeholder="文字列を入力してください">
+    </div>
+    
+    <div class="debug-info" id="debugHash"></div>
+</div>
+
+<script>
+/**
+ * 文字列から簡易32bitハッシュ（シード）を作成する関数
+ */
+function cyrb128(str) {
+    let h1 = 1779033703, h2 = 3024733165, h3 = 3362453659, h4 = 502494325;
+    for (let i = 0, k; i < str.length; i++) {
+        k = str.charCodeAt(i);
+        h1 = h2 ^ Math.imul(h1 ^ k, 597399067);
+        h2 = h3 ^ Math.imul(h2 ^ k, 2869860233);
+        h3 = h4 ^ Math.imul(h3 ^ k, 951274213);
+        h4 = h1 ^ Math.imul(h4 ^ k, 271604417);
+    }
+    h1 = Math.imul(h3 ^ (h1 >>> 18), 597399067);
+    h2 = Math.imul(h4 ^ (h2 >>> 22), 2869860233);
+    h3 = Math.imul(h1 ^ (h3 >>> 17), 951274213);
+    h4 = Math.imul(h2 ^ (h4 >>> 19), 271604417);
+    return (h1^h2^h3^h4)>>>0;
+}
+
+/**
+ * 線形合同法（LCG）によるシード記述型の疑似乱数から64バイトを生成
+ */
+function generateLCGBytes(seed, length = 64) {
+    const bytes = new Uint8Array(length);
+    let s = seed;
+    for (let i = 0; i < length; i++) {
+        // 典型的なLCGの定数
+        s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+        bytes[i] = s & 0xFF; // 下位8ビットを抽出
+    }
+    return bytes;
+}
+
+/**
+ * メインのバイト配列生成（ユーザーの選択に応じて分岐）
+ */
+async function getBytesByAlgorithm(text, algo) {
+    const msgUint8 = new TextEncoder().encode(text);
+    
+    if (algo === 'SHA-512') {
+        const buffer = await crypto.subtle.digest('SHA-512', msgUint8);
+        return new Uint8Array(buffer);
+    } 
+    else if (algo === 'SHA-256') {
+        const buffer = await crypto.subtle.digest('SHA-256', msgUint8);
+        const sha256Bytes = new Uint8Array(buffer);
+        // 64バイト必要なので、足りない分はループ（リピート）させて偽装する
+        const extendedBytes = new Uint8Array(64);
+        for(let i=0; i<64; i++) {
+            extendedBytes[i] = sha256Bytes[i % 32];
+        }
+        return extendedBytes;
+    } 
+    else { // Seed-LCG
+        const seed = cyrb128(text);
+        return generateLCGBytes(seed, 64);
+    }
+}
+
+function oklchToRgb(l, c, h) {
+    return `oklch(${l} ${c} ${h})`;
+}
+
+function createOrganicBlobPath(cx, cy, pointsCount, radii, handles, isSymmetric) {
+    const coords = [];
+    for (let i = 0; i < pointsCount; i++) {
+        let index = i;
+        if (isSymmetric && i > pointsCount / 2) {
+            index = pointsCount - i;
+        }
+        const angle = (i * 2 * Math.PI) / pointsCount - Math.PI / 2;
+        const r = radii[index % radii.length];
+        const x = cx + r * Math.cos(angle);
+        const y = cy + r * Math.sin(angle);
+        coords.push({ x, y, angle });
+    }
+
+    let d = `M ${coords[0].x.toFixed(1)} ${coords[0].y.toFixed(1)}`;
+    for (let i = 0; i < pointsCount; i++) {
+        const curr = coords[i];
+        const next = coords[(i + 1) % pointsCount];
+        const hLength1 = handles[i % handles.length];
+        const hLength2 = handles[(i + 1) % handles.length];
+
+        const cp1x = curr.x + hLength1 * Math.cos(curr.angle + Math.PI / 2);
+        const cp1y = curr.y + hLength1 * Math.sin(curr.angle + Math.PI / 2);
+        const cp2x = next.x - hLength2 * Math.cos(next.angle + Math.PI / 2);
+        const cp2y = next.y - hLength2 * Math.sin(next.angle + Math.PI / 2);
+
+        d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${next.x.toFixed(1)} ${next.y.toFixed(1)}`;
+    }
+    d += ' Z';
+    return d;
+}
+
+async function renderSVGIcon() {
+    const wrapper = document.getElementById('svgWrapper');
+    const text = document.getElementById('inputText').value;
+    const algo = document.getElementById('algoSelect').value;
+    
+    // アルゴリズムを切り替えて64バイトを調達
+    const bytes = await getBytesByAlgorithm(text, algo);
+    
+    // デバッグ表示
+    const hexStr = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    document.getElementById('debugHash').innerHTML = `<strong>Mode:</strong> ${algo}<br><strong>Buffer (64B):</strong> ${hexStr.substring(0, 48)}...`;
+
+    const cx = 200, cy = 200;
+
+    // --- Phase 1: カラーシステム ---
+    const baseHue = (bytes[0] * 360) / 255;
+    const hueOffset = (bytes[1] * 120) / 255 + 60;
+    const accentHue = (baseHue + hueOffset) % 360;
+    const chroma = 0.18 + (bytes[2] % 30) / 500;
+    const tone = 0.55 + (bytes[3] % 20) / 200;
+
+    const mainColor = oklchToRgb(tone, chroma, baseHue);
+    const accentColor = oklchToRgb(tone + 0.1, chroma, accentHue);
+    const bgColor = "#121212";
+
+    // --- Phase 2: メイン輪郭 ---
+    const pointsCount = 12;
+    const mainRadii = [];
+    const mainHandles = [];
+    for (let i = 0; i < 7; i++) {
+        mainRadii.push(70 + (bytes[4 + i] % 80));
+        mainHandles.push(15 + (bytes[12 + i] % 35)); 
+    }
+    const globalRotationDeg = ((bytes[14] % 60) - 30);
+
+    // --- Phase 3: フラグ判定 ---
+    const hasNegative = bytes[20] % 2 === 0;
+    const hasCore = bytes[21] % 2 === 0;
+    const hasOffset = bytes[22] % 2 === 0;
+
+    // --- SVGビルド ---
+    let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="100%" height="100%">`;
+    svgContent += `<g transform="rotate(${globalRotationDeg} ${cx} ${cy})">`;
+
+    if (hasOffset) {
+        const offsetX = ((bytes[35] % 20) - 10);
+        const offsetY = ((bytes[36] % 20) - 10);
+        const offsetD = createOrganicBlobPath(cx, cy, pointsCount, mainRadii, mainHandles, true);
+        svgContent += `<path d="${offsetD}" fill="${accentColor}" transform="translate(${offsetX}, ${offsetY})" />`;
+    }
+
+    const mainD = createOrganicBlobPath(cx, cy, pointsCount, mainRadii, mainHandles, true);
+    svgContent += `<path d="${mainD}" fill="${mainColor}" />`;
+
+    if (hasNegative) {
+        const negRadii = mainRadii.map((r, i) => Math.max(20, r * 0.3 + (bytes[23 + i % 7] % 20)));
+        const negHandles = mainHandles.map((h, i) => h * 0.4);
+        const negD = createOrganicBlobPath(cx, cy, pointsCount, negRadii, negHandles, true);
+        svgContent += `<path d="${negD}" fill="${bgColor}" />`;
+    }
+
+    if (hasCore) {
+        const coreType = bytes[31] % 3;
+        const coreSize = 15 + (bytes[32] % 25);
+        const strokeWidth = 6 + (bytes[33] % 8);
+        const coreColor = hasNegative ? mainColor : accentColor;
+
+        if (coreType === 0) {
+            svgContent += `<circle cx="${cx}" cy="${cy}" r="${coreSize * 0.6}" fill="${coreColor}" />`;
+        } else if (coreType === 1) {
+            svgContent += `<line x1="${cx}" y1="${cy - coreSize}" x2="${cx}" y2="${cy + coreSize}" stroke="${coreColor}" stroke-width="${strokeWidth}" stroke-linecap="round" />`;
+        } else if (coreType === 2) {
+            svgContent += `<line x1="${cx}" y1="${cy - coreSize}" x2="${cx}" y2="${cy + coreSize}" stroke="${coreColor}" stroke-width="${strokeWidth}" stroke-linecap="round" />`;
+            svgContent += `<line x1="${cx - coreSize}" y1="${cy}" x2="${cx + coreSize}" y2="${cy}" stroke="${coreColor}" stroke-width="${strokeWidth}" stroke-linecap="round" />`;
+        }
+    }
+
+    svgContent += `</g></svg>`;
+    wrapper.innerHTML = svgContent;
+}
+
+// イベント紐付け
+document.getElementById('inputText').addEventListener('input', renderSVGIcon);
+document.getElementById('algoSelect').addEventListener('change', renderSVGIcon);
+window.onload = renderSVGIcon;
+</script>
+
+</body>
+</html>

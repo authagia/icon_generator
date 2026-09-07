@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>512bit Organic SVG Icon Generator</title>
+    <style>
+        body {
+            background: #121212;
+            color: #e0e0e0;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .container {
+            text-align: center;
+            background: #1e1e1e;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        }
+        .svg-container {
+            background: #121212;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            width: 400px;
+            height: 400px;
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        input {
+            width: 80%;
+            padding: 12px;
+            border: 2px solid #333;
+            background: #2a2a2a;
+            color: #fff;
+            border-radius: 8px;
+            font-size: 16px;
+            text-align: center;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        input:focus {
+            border-color: #555;
+        }
+        .debug-info {
+            margin-top: 15px;
+            font-family: monospace;
+            font-size: 11px;
+            color: #888;
+            max-width: 400px;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="svg-container" id="svgWrapper">
+        </div>
+    <br>
+    <input type="text" id="inputText" value="rorschach-test-512" placeholder="文字列を入力してください">
+    <div class="debug-info" id="debugHash"></div>
+</div>
+
+<script>
+/**
+ * 1. SHA-512 ハッシュ関数のWeb Crypto API実装
+ */
+async function getSHA512Bytes(text) {
+    const msgUint8 = new TextEncoder().encode(text);
+    const hashBuffer = await crypto.subtle.digest('SHA-512', msgUint8);
+    return new Uint8Array(hashBuffer);
+}
+
+/**
+ * 2. Oklch色空間のカラーコード生成
+ */
+function oklchToRgb(l, c, h) {
+    return `oklch(${l} ${c} ${h})`;
+}
+
+/**
+ * 3. 極座標ベジェ曲線からSVGのパスデータ（d属性の文字列）を生成する
+ */
+function createOrganicBlobPath(cx, cy, pointsCount, radii, handles, isSymmetric) {
+    const coords = [];
+    
+    // 12方向の制御点を計算
+    for (let i = 0; i < pointsCount; i++) {
+        let index = i;
+        if (isSymmetric && i > pointsCount / 2) {
+            index = pointsCount - i; // Y軸対称
+        }
+        
+        const angle = (i * 2 * Math.PI) / pointsCount - Math.PI / 2; // 真上から開始
+        const r = radii[index % radii.length];
+        const x = cx + r * Math.cos(angle);
+        const y = cy + r * Math.sin(angle);
+        coords.push({ x, y, angle });
+    }
+
+    // SVG Pathの組み立て
+    let d = `M ${coords[0].x.toFixed(1)} ${coords[0].y.toFixed(1)}`;
+
+    for (let i = 0; i < pointsCount; i++) {
+        const curr = coords[i];
+        const next = coords[(i + 1) % pointsCount];
+        
+        const hLength1 = handles[i % handles.length];
+        const hLength2 = handles[(i + 1) % handles.length];
+
+        // 接線方向にハンドルを伸ばす
+        const cp1x = curr.x + hLength1 * Math.cos(curr.angle + Math.PI / 2);
+        const cp1y = curr.y + hLength1 * Math.sin(curr.angle + Math.PI / 2);
+        const cp2x = next.x - hLength2 * Math.cos(next.angle + Math.PI / 2);
+        const cp2y = next.y - hLength2 * Math.sin(next.angle + Math.PI / 2);
+
+        d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${next.x.toFixed(1)} ${next.y.toFixed(1)}`;
+    }
+    
+    d += ' Z';
+    return d;
+}
+
+/**
+ * 4. メインのSVGレンダリング
+ */
+async function renderSVGIcon() {
+    const wrapper = document.getElementById('svgWrapper');
+    const text = document.getElementById('inputText').value;
+    
+    const bytes = await getSHA512Bytes(text);
+    
+    // デバッグ表示
+    document.getElementById('debugHash').innerText = "SHA-512: " + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 64) + "...";
+
+    const cx = 200;
+    const cy = 200;
+
+    // --- Phase 1: カラーシステム ---
+    const baseHue = (bytes[0] * 360) / 255;
+    const hueOffset = (bytes[1] * 120) / 255 + 60;
+    const accentHue = (baseHue + hueOffset) % 360;
+    
+    const chroma = 0.18 + (bytes[2] % 30) / 500;
+    const tone = 0.55 + (bytes[3] % 20) / 200;
+
+    const mainColor = oklchToRgb(tone, chroma, baseHue);
+    const accentColor = oklchToRgb(tone + 0.1, chroma, accentHue);
+    const bgColor = "#121212";
+
+    // --- Phase 2: メイン輪郭のパラメータ ---
+    const pointsCount = 12;
+    const mainRadii = [];
+    const mainHandles = [];
+    
+    for (let i = 0; i < 7; i++) {
+        mainRadii.push(70 + (bytes[4 + i] % 80));
+        // 💡 小さいループ（ゴミ）を防ぐため、ハンドルの最大長を 50 から 35 に少しマイルド化
+        mainHandles.push(15 + (bytes[12 + i] % 35)); 
+    }
+
+    // 全体の回転角
+    const globalRotationDeg = ((bytes[14] % 60) - 30); // ±30度
+
+    // --- Phase 3: フラグ判定 ---
+    const hasNegative = bytes[20] % 2 === 0;
+    const hasCore = bytes[21] % 2 === 0;
+    const hasOffset = bytes[22] % 2 === 0;
+
+    // --- SVG文字列のビルド ---
+    let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="100%" height="100%">`;
+    
+    // 全体を中央で回転させるためのグループグループ
+    svgContent += `<g transform="rotate(${globalRotationDeg} ${cx} ${cy})">`;
+
+    // 【1】オフセット（背後の影）
+    if (hasOffset) {
+        const offsetX = ((bytes[35] % 20) - 10);
+        const offsetY = ((bytes[36] % 20) - 10);
+        const offsetD = createOrganicBlobPath(cx, cy, pointsCount, mainRadii, mainHandles, true);
+        svgContent += `<path d="${offsetD}" fill="${accentColor}" transform="translate(${offsetX}, ${offsetY})" />`;
+    }
+
+    // 【2】メイン輪郭
+    const mainD = createOrganicBlobPath(cx, cy, pointsCount, mainRadii, mainHandles, true);
+    svgContent += `<path d="${mainD}" fill="${mainColor}" />`;
+
+    // 【3】ネガスペース（型抜き）
+    if (hasNegative) {
+        const negRadii = mainRadii.map((r, i) => Math.max(20, r * 0.3 + (bytes[23 + i % 7] % 20)));
+        const negHandles = mainHandles.map((h, i) => h * 0.4);
+        const negD = createOrganicBlobPath(cx, cy, pointsCount, negRadii, negHandles, true);
+        svgContent += `<path d="${negD}" fill="${bgColor}" />`;
+    }
+
+    // 【4】幾何学コア
+    if (hasCore) {
+        const coreType = bytes[31] % 3;
+        const coreSize = 15 + (bytes[32] % 25);
+        const strokeWidth = 6 + (bytes[33] % 8);
+        const coreColor = hasNegative ? mainColor : accentColor;
+
+        if (coreType === 0) {
+            // 正円
+            svgContent += `<circle cx="${cx}" cy="${cy}" r="${coreSize * 0.6}" fill="${coreColor}" />`;
+        } else if (coreType === 1) {
+            // 垂直線
+            svgContent += `<line x1="${cx}" y1="${cy - coreSize}" x2="${cx}" y2="${cy + coreSize}" stroke="${coreColor}" stroke-width="${strokeWidth}" stroke-linecap="round" />`;
+        } else if (coreType === 2) {
+            // クロス
+            svgContent += `<line x1="${cx}" y1="${cy - coreSize}" x2="${cx}" y2="${cy + coreSize}" stroke="${coreColor}" stroke-width="${strokeWidth}" stroke-linecap="round" />`;
+            svgContent += `<line x1="${cx - coreSize}" y1="${cy}" x2="${cx + coreSize}" y2="${cy}" stroke="${coreColor}" stroke-width="${strokeWidth}" stroke-linecap="round" />`;
+        }
+    }
+
+    svgContent += `</g></svg>`;
+
+    // HTMLに流し込む
+    wrapper.innerHTML = svgContent;
+}
+
+// イベント設定
+document.getElementById('inputText').addEventListener('input', renderSVGIcon);
+window.onload = renderSVGIcon;
+</script>
+
+</body>
+</html>
