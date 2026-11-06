@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Organic SVG Icon Generator</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #111315;
+      color: #e6e8eb;
+      font-family: system-ui, sans-serif;
+      min-height: 100vh;
+      margin: 0;
+      padding: 4px;
+      overflow: hidden;
+    }
+
+    .gallery-thumb svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .gallery-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+      grid-template-rows: repeat(auto-fill, minmax(110px, 1fr));
+      gap: 6px;
+    }
+
+    .gallery-card {
+      display: block;
+      min-width: 0;
+      text-align: left;
+      padding: 4px;
+      border: 1px solid #343b44;
+      border-radius: 10px;
+      background: #22272d;
+      color: #dfe3e8;
+      transition: border-color .15s, background .15s, transform .15s;
+    }
+
+    .gallery-card:hover {
+      border-color: #78899d;
+      background: #29313a;
+      transform: translateY(-1px);
+    }
+
+    .gallery-card:focus-visible {
+      outline: 2px solid #9ab1ca;
+      outline-offset: 2px;
+    }
+
+    .gallery-card.selected {
+      border-color: #8ca7c3;
+      box-shadow: 0 0 0 1px #8ca7c3 inset;
+    }
+
+    .gallery-thumb {
+      width: 100%;
+      aspect-ratio: 1;
+      background: #121416;
+      border-radius: 7px;
+      overflow: hidden;
+    }
+
+    .empty-state {
+      color: #858e99;
+      font-size: 13px;
+      padding: 40px 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        padding: 14px;
+      }
+
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .preview-panel {
+        position: static;
+      }
+
+      .preview-panel .svg-container {
+        max-width: 380px;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .panel {
+        padding: 13px;
+      }
+
+      .gallery-grid {
+        grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+        gap: 8px;
+      }
+
+      .gallery-toolbar .field {
+        width: 110px;
+      }
+
+      .gallery-status {
+        width: 100%;
+        margin-left: 0;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main class="app-shell">
+    <div class="gallery-grid" id="galleryGrid">
+      <div class="empty-state">アイコンを生成しています…</div>
+    </div>
+  </main>
+
+  <script>
+    'use strict';
+
+    const VIEW_SIZE = 400;
+    const CENTER = VIEW_SIZE / 2;
+    const BLUEPRINT_BITS_USED = 256;
+    const BLUEPRINT_BITS_RESERVED = 512 - BLUEPRINT_BITS_USED; // 256bit
+    const ACCENT_MIN_CONTRAST = 3.0; // 非テキスト図形の視認性を意識した最低コントラスト比
+    const ACCENT_ON_BLOB_LIGHTNESS = 0.16; // Blob上では暗色パレットを直接生成
+    const ACCENT_ON_BLOB_CHROMA = 0.18;
+    const ACCENT_STROKE_BOOST = 3; // 既存アクセント線幅から一律+3px
+
+    const ACCENT_TYPES = [
+      'dot', 'ring', 'star', 'diamond', 'triangle', 'square',
+      'heart', 'crescent', 'sparkle', 'cross', 'mini-blob'
+    ];
+
+    const SPIRAL_CANDIDATE_COUNT = 2048; // 候補点は2048点。Position 8bitで候補列全体へ均等に写像する
+    const SPIRAL_GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+    const SPIRAL_BOUNDARY_MARGIN = 4.5; // 輪郭近似誤差と見た目の余白
+    const ACCENT_COLLISION_GAP = 3.5;
+
+    /**
+     * SHA-512の生ビット列を、指定幅でMSB-firstに読み取る。
+     * 値の伸長・疑似乱数生成・範囲外読み取りは行わない。
+     */
+    class BitReader {
+      constructor(bytes, startBit = 0) {
+        if (!(bytes instanceof Uint8Array) || bytes.length * 8 < 512) {
+          throw new TypeError('512bit以上のハッシュが必要です');
+        }
+        this.bytes = bytes;
+        this.offset = startBit;
+      }
+
+      read(width) {
+        if (!Number.isInteger(width) || width < 1 || width > 16) {
+          throw new RangeError(`Unsupported bit width: ${width}`);
+        }
+        if (this.offset + width > this.bytes.length * 8) {
+          throw new RangeError('ハッシュのビット列が不足しています');
+        }
+        let value = 0;
+        for (let i = 0; i < width; i++) {
+          const bitOffset = this.offset++;
+          const byte = this.bytes[bitOffset >>> 3];
+          const shift = 7 - (bitOffset & 7);
+          value = (value << 1) | ((byte >>> shift) & 1);
+        }
+        return value;
+      }
+    }
+
+    function oklchToRgb(l, c, h) {
+      return `oklch(${l} ${c} ${h})`;
+    }
+
+    /** OKLCHをsRGBへ変換し、WCAG式の相対輝度を求める。 */
+    function oklchRelativeLuminance({l, c, h}) {
+      const angle = h * Math.PI / 180;
+      const a = c * Math.cos(angle);
+      const b = c * Math.sin(angle);
+      const lRoot = l + 0.3963377774 * a + 0.2158037573 * b;
+      const mRoot = l - 0.1055613458 * a - 0.0638541728 * b;
+      const sRoot = l - 0.0894841775 * a - 1.2914855480 * b;
+      const ll = lRoot ** 3;
+      const mm = mRoot ** 3;
+      const ss = sRoot ** 3;
+      const r = 4.0767416621 * ll - 3.3077115913 * mm + 0.2309699292 * ss;
+      const g = -1.2684380046 * ll + 2.6097574011 * mm - 0.3413193965 * ss;
+      const blue = -0.0041960863 * ll - 0.7034186147 * mm + 1.7076147010 * ss;
+      // CSS表示時のsRGBガマット外クリップを近似する。
+      const clamp = value => Math.max(0, Math.min(1, value));
+      return 0.2126 * clamp(r) + 0.7152 * clamp(g) + 0.0722 * clamp(blue);
+    }
+
+    function hexRelativeLuminance(hex) {
+      const match = /^#([0-9a-f]{6})$/i.exec(hex);
+      if (!match) throw new TypeError(`Unsupported background color: ${hex}`);
+      const value = match[1];
+      const channels = [0, 2, 4].map(index => parseInt(value.slice(index, index + 2), 16) / 255);
+      const linear = channels.map(channel =>
+        channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+      );
+      return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+    }
+
+    function relativeLuminance(color) {
+      return typeof color === 'string' ? hexRelativeLuminance(color) : oklchRelativeLuminance(color);
+    }
+
+    function contrastRatio(colorA, colorB) {
+      const luminanceA = relativeLuminance(colorA);
+      const luminanceB = relativeLuminance(colorB);
+      const lighter = Math.max(luminanceA, luminanceB);
+      const darker = Math.min(luminanceA, luminanceB);
+      return (lighter + 0.05) / (darker + 0.05);
+    }
+
+    /**
+     * アクセント色を一段で決定する。配置面に応じて、事前定義した色パレットを直接選ぶ。
+     * Blob上では全てのMain色に対して3:1以上を確保する暗色パレット、
+     * Negative上では暗い背景に対して3:1以上となる従来の明色パレットを使う。
+     * 色の探索・明度補正・再試行は行わない。
+     */
+    function createAccentColorSpec(role, surface, colorSpecs) {
+      const source = colorSpecs[role] || colorSpecs.main;
+      if (surface === 'main') {
+        return {
+          l: ACCENT_ON_BLOB_LIGHTNESS,
+          c: ACCENT_ON_BLOB_CHROMA,
+          h: source.h
+        };
+      }
+      return {l: source.l, c: source.c, h: source.h};
+    }
+
+    function createOrganicBlobPath(cx, cy, pointsCount, radii, handles, isSymmetric) {
+      const coords = [];
+      for (let i = 0; i < pointsCount; i++) {
+        let index = i;
+        if (isSymmetric && i > pointsCount / 2) index = pointsCount - i;
+        const angle = (i * 2 * Math.PI) / pointsCount - Math.PI / 2;
+        const r = radii[index % radii.length];
+        coords.push({
+          x: cx + r * Math.cos(angle),
+          y: cy + r * Math.sin(angle),
+          angle
+        });
+      }
+
+      let d = `M ${coords[0].x.toFixed(1)} ${coords[0].y.toFixed(1)}`;
+      for (let i = 0; i < pointsCount; i++) {
+        const curr = coords[i];
+        const next = coords[(i + 1) % pointsCount];
+        const hLength1 = handles[i % handles.length];
+        const hLength2 = handles[(i + 1) % handles.length];
+        const cp1x = curr.x + hLength1 * Math.cos(curr.angle + Math.PI / 2);
+        const cp1y = curr.y + hLength1 * Math.sin(curr.angle + Math.PI / 2);
+        const cp2x = next.x - hLength2 * Math.cos(next.angle + Math.PI / 2);
+        const cp2y = next.y - hLength2 * Math.sin(next.angle + Math.PI / 2);
+        d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${next.x.toFixed(1)} ${next.y.toFixed(1)}`;
+      }
+      return d + ' Z';
+    }
+
+    function centeredOffset(code, spread) {
+      // 一様な7bit値を、中央に密度が寄る対称な分布へ写像する。
+      const u = (code - 63.5) / 63.5;
+      return Math.sign(u) * Math.pow(Math.abs(u), 1.7) * spread;
+    }
+
+    function decodeAccentCount(code) {
+      // 4bitを16通りに分け、0〜4個の出現比率を従来の分布に近づける。
+      if (code < 2) return 0;  // 2/16 = 12.5%
+      if (code < 7) return 1;  // 5/16 = 31.25%
+      if (code < 12) return 2; // 5/16 = 31.25%
+      if (code < 15) return 3; // 3/16 = 18.75%
+      return 4;                // 1/16 = 6.25%
+    }
+
+    function decodeAccentType(code) {
+      // 4bitで11種類を選択。余剰5コードは一部の基本形へ均等に割り当てる。
+      const map = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 8, 10];
+      return ACCENT_TYPES[map[code & 0x0f]];
+    }
+
+    /**
+     * n bitのcodeを、指定した数値範囲へ線形に写像する。
+     * 通常は 0 -> low、(2^n - 1) -> high の両端を含む。
+     * 角度など周期量では includeHigh=false として [low, high) にする。
+     */
+    function mapBitCodeToRange(code, bitWidth, low, high, includeHigh = true) {
+      if (!Number.isInteger(bitWidth) || bitWidth < 1 || bitWidth > 16) {
+        throw new RangeError(`Unsupported bit width: ${bitWidth}`);
+      }
+      const codeCount = 2 ** bitWidth;
+      if (!Number.isInteger(code) || code < 0 || code >= codeCount) {
+        throw new RangeError(`Code ${code} does not fit in ${bitWidth} bits`);
+      }
+      if (!Number.isFinite(low) || !Number.isFinite(high)) {
+        throw new TypeError('Range endpoints must be finite numbers');
+      }
+      const denominator = includeHigh ? codeCount - 1 : codeCount;
+      return low + (code / denominator) * (high - low);
+    }
+
+    function readAccentBlueprint(reader, minStrokeWidth) {
+      const typeCode = reader.read(4);
+      const positionCode = reader.read(8);
+      const sizeCode = reader.read(4);
+      const rotationCode = reader.read(5);
+      const styleCode = reader.read(1);
+      const colorCode = reader.read(2);
+      const shapeBits = reader.read(4);
+
+      const size = round2(mapBitCodeToRange(sizeCode, 4, 23, 41)); // 23〜41pxを16段階
+      return {
+        type: decodeAccentType(typeCode),
+        positionCode,
+        x: null,
+        y: null,
+        visible: false,
+        sizeCode,
+        size,
+        sizeClass: size >= 36.5 ? 'large' : size >= 30 ? 'medium' : 'small',
+        rotation: mapBitCodeToRange(rotationCode, 5, 0, 360, false), // 0〜360°（360°を含まない）
+        style: styleCode === 0 ? 'fill' : 'stroke',
+        minStrokeWidth,
+        // 00=main, 01=accent, 10=third, 11=main。Mainを少し多めにする。
+        color: ['main', 'accent', 'third', 'main'][colorCode],
+        shapeBits
+      };
+    }
+
+    /**
+     * メインBlobのSVG Bézier輪郭を多角形近似する。
+     * 配置判定は描画と同じ制御点を使うため、別の形状モデルを導入しない。
+     */
+    function createOrganicBlobContour(cx, cy, pointsCount, radii, handles, isSymmetric, samplesPerSegment = 10) {
+      const coords = [];
+      for (let i = 0; i < pointsCount; i++) {
+        let index = i;
+        if (isSymmetric && i > pointsCount / 2) index = pointsCount - i;
+        const angle = (i * 2 * Math.PI) / pointsCount - Math.PI / 2;
+        const r = radii[index % radii.length];
+        coords.push({x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle), angle});
+      }
+
+      const contour = [];
+      for (let i = 0; i < pointsCount; i++) {
+        const curr = coords[i];
+        const next = coords[(i + 1) % pointsCount];
+        const hLength1 = handles[i % handles.length];
+        const hLength2 = handles[(i + 1) % handles.length];
+        const p0 = curr;
+        const p1 = {
+          x: curr.x + hLength1 * Math.cos(curr.angle + Math.PI / 2),
+          y: curr.y + hLength1 * Math.sin(curr.angle + Math.PI / 2)
+        };
+        const p2 = {
+          x: next.x - hLength2 * Math.cos(next.angle + Math.PI / 2),
+          y: next.y - hLength2 * Math.sin(next.angle + Math.PI / 2)
+        };
+        const p3 = next;
+
+        for (let sample = 0; sample < samplesPerSegment; sample++) {
+          const t = sample / samplesPerSegment;
+          const mt = 1 - t;
+          const mt2 = mt * mt;
+          const t2 = t * t;
+          contour.push({
+            x: mt2 * mt * p0.x + 3 * mt2 * t * p1.x + 3 * mt * t2 * p2.x + t2 * t * p3.x,
+            y: mt2 * mt * p0.y + 3 * mt2 * t * p1.y + 3 * mt * t2 * p2.y + t2 * t * p3.y
+          });
+        }
+      }
+      return contour;
+    }
+
+    function getPolygonBounds(polygon) {
+      return polygon.reduce((bounds, point) => ({
+        minX: Math.min(bounds.minX, point.x),
+        minY: Math.min(bounds.minY, point.y),
+        maxX: Math.max(bounds.maxX, point.x),
+        maxY: Math.max(bounds.maxY, point.y)
+      }), {minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity});
+    }
+
+    function pointInPolygon(x, y, polygon) {
+      let inside = false;
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const a = polygon[i];
+        const b = polygon[j];
+        const crosses = (a.y > y) !== (b.y > y) &&
+          x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x;
+        if (crosses) inside = !inside;
+      }
+      return inside;
+    }
+
+    /**
+     * 点がポリゴンの内外どちらにあるかと、境界までの最短距離を1走査で求める。
+     * 中心が内側で境界距離 >= r なら、半径rの円全体が内側に収まる。
+     */
+    function measurePointAgainstPolygon(x, y, polygon) {
+      let inside = false;
+      let minDistance2 = Infinity;
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const a = polygon[j];
+        const b = polygon[i];
+        if ((a.y > y) !== (b.y > y) &&
+          x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) {
+          inside = !inside;
+        }
+
+        const vx = b.x - a.x;
+        const vy = b.y - a.y;
+        const length2 = vx * vx + vy * vy;
+        const t = length2 === 0 ? 0 : Math.max(0, Math.min(1,
+          ((x - a.x) * vx + (y - a.y) * vy) / length2
+        ));
+        const dx = x - (a.x + t * vx);
+        const dy = y - (a.y + t * vy);
+        const distance2 = dx * dx + dy * dy;
+        if (distance2 < minDistance2) minDistance2 = distance2;
+      }
+      return {inside, clearance: Math.sqrt(minDistance2)};
+    }
+
+    /** 図形ごとの保守的な外接半径。回転しても輪郭からはみ出さない。 */
+    function accentEffectiveStrokeWidth(accent, size = accent.size) {
+      const minimum = accent.minStrokeWidth || 3;
+      const p = accent.shapeBits;
+      let baseWidth;
+      if (accent.type === 'cross') {
+        baseWidth = Math.max(minimum, size * mapBitCodeToRange(p & 3, 2, 0.12, 0.32));
+      } else if (accent.type === 'crescent' && (p & 1) === 1) {
+        const thickness = mapBitCodeToRange((p >>> 1) & 3, 2, 0.16, 0.52);
+        baseWidth = Math.max(minimum, size * thickness * 0.58);
+      } else {
+        baseWidth = Math.max(minimum, size * mapBitCodeToRange((p >>> 2) & 3, 2, 0.11, 0.14));
+      }
+      return baseWidth + ACCENT_STROKE_BOOST;
+    }
+
+    function accentFootprintRadius(accent, size = accent.size) {
+      const factors = {
+        dot: 0.52, ring: 0.54, star: 0.53, diamond: 0.63,
+        triangle: 0.80, square: 0.83, heart: 1.08,
+        crescent: 0.68, sparkle: 0.62, cross: 0.56, 'mini-blob': 0.53
+      };
+      const hasVisibleStroke = accent.style === 'stroke' || accent.type === 'cross' ||
+        (accent.type === 'crescent' && (accent.shapeBits & 1) === 1);
+      const strokeAllowance = hasVisibleStroke ? accentEffectiveStrokeWidth(accent, size) / 2 : 0;
+      return size * factors[accent.type] + strokeAllowance + 1.5;
+    }
+
+    function hasAccentCollision(x, y, radius, placed, gap = ACCENT_COLLISION_GAP) {
+      for (const other of placed) {
+        const minDistance = radius + other.radius + gap;
+        const dx = x - other.x;
+        const dy = y - other.y;
+        if (dx * dx + dy * dy < minDistance * minDistance) return true;
+      }
+      return false;
+    }
+
+    /**
+     * 黄金角のスパイラル（sunflower / phyllotaxis）候補を、中心から外側へ生成する。
+     * 候補点ごとにBlobとNegativeの境界クリアランスを一度だけ計算しておく。
+     */
+    function createSpiralCandidateField(main, negativePolygon, phaseCode) {
+      const polygon = createOrganicBlobContour(
+        main.center.x, main.center.y, main.pointsCount,
+        main.radii, main.handles, true, 12
+      );
+      const maxRadius = Math.max(...polygon.map(point =>
+        Math.hypot(point.x - main.center.x, point.y - main.center.y)
+      )) + 4;
+      const bounds = polygon.reduce((result, point) => ({
+        minX: Math.min(result.minX, point.x),
+        minY: Math.min(result.minY, point.y),
+        maxX: Math.max(result.maxX, point.x),
+        maxY: Math.max(result.maxY, point.y)
+      }), {minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity});
+      const phase = (phaseCode & 7) * Math.PI / 4;
+      const candidates = [];
+
+      for (let i = 0; i < SPIRAL_CANDIDATE_COUNT; i++) {
+        const ratio = Math.sqrt((i + 0.5) / SPIRAL_CANDIDATE_COUNT);
+        const radius = maxRadius * ratio;
+        const angle = phase + i * SPIRAL_GOLDEN_ANGLE;
+        const x = main.center.x + Math.cos(angle) * radius;
+        const y = main.center.y + Math.sin(angle) * radius;
+        if (x < bounds.minX || x > bounds.maxX || y < bounds.minY || y > bounds.maxY) continue;
+
+        const mainMeasure = measurePointAgainstPolygon(x, y, polygon);
+        if (!mainMeasure.inside) continue;
+
+        let negativeInside = false;
+        let negativeClearance = Infinity;
+        if (negativePolygon) {
+          const negativeMeasure = measurePointAgainstPolygon(x, y, negativePolygon);
+          negativeInside = negativeMeasure.inside;
+          negativeClearance = negativeMeasure.clearance;
+        }
+
+        candidates.push({x, y, mainClearance: mainMeasure.clearance, negativeInside, negativeClearance});
+      }
+      return candidates;
+    }
+
+    /**
+     * 配置可能な候補集合を先に作り、8bitコードでその中から直接選ぶ。
+     * 選択後の座標移動・サイズ縮小・再抽選は行わない。
+     * 既配置アクセントの周辺は候補集合から除外し、候補が尽きたら終了する。
+     */
+    function placeAccentsOnSpiral(accents, main, negativePolygon, phaseCode) {
+      if (accents.length === 0) return accents;
+
+      const candidateField = createSpiralCandidateField(main, negativePolygon, phaseCode);
+      const indexed = accents.map((accent, index) => ({accent, index}))
+        .sort((a, b) => accentFootprintRadius(b.accent) - accentFootprintRadius(a.accent) || a.index - b.index);
+      const placed = [];
+
+      for (const item of indexed) {
+        const accent = item.accent;
+        const radius = accentFootprintRadius(accent);
+        const valid = [];
+
+        for (const candidate of candidateField) {
+          // 距離条件により円形の占有領域全体がBlob内かつNegativeの同一側に収まる。
+          if (candidate.mainClearance < radius + SPIRAL_BOUNDARY_MARGIN) continue;
+          if (negativePolygon && candidate.negativeClearance < radius + SPIRAL_BOUNDARY_MARGIN) continue;
+          if (hasAccentCollision(candidate.x, candidate.y, radius, placed)) continue;
+          valid.push(candidate);
+        }
+
+        if (valid.length === 0) {
+          // このサイズでは置けない。座標やサイズは修正せず、より小さい次の図形を試す。
+          accent.visible = false;
+          accent.placementScale = 1;
+          continue;
+        }
+
+        // Position 8bitを、配置可能な候補列全体へ均等に写像する。
+        // 候補が2048点すべて有効なら、256段階のコードは候補列を約8点刻みで選ぶ。
+        const selectedIndex = Math.min(valid.length - 1,
+          Math.floor(((accent.positionCode + 0.5) / 256) * valid.length));
+        const selected = valid[selectedIndex];
+        accent.x = round2(selected.x);
+        accent.y = round2(selected.y);
+        accent.placementScale = 1;
+        accent.visible = true;
+        accent.positionMethod = 'spiral';
+        accent.availablePositionCount = valid.length;
+        placed.push({x: selected.x, y: selected.y, radius, index: item.index});
+      }
+
+      return accents;
+    }
+
+    function round2(value) {
+      return Math.round(value * 100) / 100;
+    }
+
+    /** SHA-512の先頭256bitを固定フィールドへ解釈し、描画と独立した設計図を作る。 */
+    function generateBlueprint(bytes) {
+      if (!(bytes instanceof Uint8Array) || bytes.length !== 64) {
+        throw new TypeError('SHA-512の64byte出力が必要です');
+      }
+
+      const reader = new BitReader(bytes, 0);
+
+      // --- Base fields (bit 0..136: 137bit) ---
+      const baseHue = mapBitCodeToRange(reader.read(8), 8, 0, 360);
+      const hueOffset = mapBitCodeToRange(reader.read(6), 6, 60, 180);
+      const accentHue = (baseHue + hueOffset) % 360;
+      const chroma = mapBitCodeToRange(reader.read(4), 4, 0.18, 0.238);
+      const tone = mapBitCodeToRange(reader.read(4), 4, 0.55, 0.645);
+
+      const mainRadii = [];
+      for (let i = 0; i < 7; i++) {
+        mainRadii.push(Math.round(mapBitCodeToRange(reader.read(6), 6, 70, 149)));
+      }
+      const mainHandles = [];
+      for (let i = 0; i < 7; i++) {
+        mainHandles.push(Math.round(mapBitCodeToRange(reader.read(5), 5, 15, 49)));
+      }
+
+      const hasNegative = reader.read(1) === 0;
+      const negativeRadii = mainRadii.map(r => {
+        const offset = Math.round(mapBitCodeToRange(reader.read(3), 3, 0, 19));
+        return Math.max(20, r * 0.3 + offset);
+      });
+
+      const mainRotationCode = reader.read(6);
+      const mainRotation = Math.floor(mapBitCodeToRange(mainRotationCode, 6, -30, 30, false));
+      const legacyCoreStrokeWidth = mapBitCodeToRange(reader.read(3), 3, 6, 13);
+      const minAccentStrokeWidth = legacyCoreStrokeWidth / 2;
+      const hasOffset = reader.read(1) === 0;
+      const offsetX = Math.round(mapBitCodeToRange(reader.read(3), 3, -10, 9));
+      const offsetY = Math.round(mapBitCodeToRange(reader.read(3), 3, -10, 9));
+
+      // --- Accent header (bit 137..143: 7bit) ---
+      const countCode = reader.read(4);
+      const accentCount = decodeAccentCount(countCode);
+      const spiralPhaseCode = reader.read(3);
+      const accents = Array.from({length: 4}, () =>
+        readAccentBlueprint(reader, minAccentStrokeWidth)
+      );
+
+      if (reader.offset !== BLUEPRINT_BITS_USED) {
+        throw new Error(`Blueprint bit allocation mismatch: ${reader.offset}/${BLUEPRINT_BITS_USED}`);
+      }
+
+      const main = {
+        center: {x: CENTER, y: CENTER},
+        pointsCount: 12,
+        radii: mainRadii,
+        handles: mainHandles,
+        rotation: mainRotation
+      };
+      const negative = {
+        enabled: hasNegative,
+        radii: negativeRadii,
+        handles: mainHandles.map(h => h * 0.4)
+      };
+      const negativeContour = negative.enabled
+        ? createOrganicBlobContour(
+          main.center.x, main.center.y, main.pointsCount,
+          negative.radii, negative.handles, true, 12
+        )
+        : null;
+      placeAccentsOnSpiral(accents.slice(0, accentCount), main, negativeContour, spiralPhaseCode);
+
+      const colorSpecs = {
+        main: {l: tone, c: chroma, h: baseHue},
+        accent: {l: tone + 0.1, c: chroma, h: accentHue},
+        third: {l: tone + 0.04, c: chroma * 0.92, h: (baseHue + 180) % 360}
+      };
+      const colors = {
+        main: oklchToRgb(colorSpecs.main.l, colorSpecs.main.c, colorSpecs.main.h),
+        // Offsetの見た目は従来どおり維持。アクセント個別の明度補正とは分離する。
+        accent: oklchToRgb(colorSpecs.accent.l, colorSpecs.accent.c, colorSpecs.accent.h),
+        offset: oklchToRgb(colorSpecs.accent.l, colorSpecs.accent.c, colorSpecs.accent.h),
+        third: oklchToRgb(colorSpecs.third.l, colorSpecs.third.c, colorSpecs.third.h),
+        background: '#121212'
+      };
+
+      // 配置面が決まった時点で、アクセント色を一度だけ選ぶ。
+      // 明度を探索・補正する後処理は行わない。
+      for (let i = 0; i < accentCount; i++) {
+        const accent = accents[i];
+        if (!accent.visible) {
+          accent.renderColor = null;
+          accent.surface = null;
+          accent.contrastRatio = null;
+          continue;
+        }
+
+        // Spiral配置ではアクセント全体がNegativeの内側か外側に収まるため、
+        // 中心点で下地を判定すれば全体の描画面を決定できる。
+        const isOnNegative = negativeContour && pointInPolygon(accent.x, accent.y, negativeContour);
+        const surface = isOnNegative ? 'background' : 'main';
+        const finalSpec = createAccentColorSpec(accent.color, surface, colorSpecs);
+        accent.renderColor = oklchToRgb(finalSpec.l, finalSpec.c, finalSpec.h);
+        accent.contrastRatio = round2(contrastRatio(finalSpec, surface === 'background' ? colors.background : colorSpecs.main));
+        accent.surface = surface;
+      }
+
+      return {
+        version: 8,
+        hash: {
+          algorithm: 'SHA-512',
+          bits: 512,
+          blueprintBitRange: [0, BLUEPRINT_BITS_USED - 1],
+          usedBits: BLUEPRINT_BITS_USED,
+          reservedBitRange: [BLUEPRINT_BITS_USED, 511],
+          reservedBits: BLUEPRINT_BITS_RESERVED
+        },
+        colors,
+        main,
+        negative,
+        offset: {
+          enabled: hasOffset,
+          x: offsetX,
+          y: offsetY
+        },
+        colorModel: 'single-pass-surface-palette-v1',
+        accentLayout: 'spiral',
+        accentSpiralPhase: spiralPhaseCode,
+        accentCount,
+        minAccentStrokeWidth,
+        accents // 4スロット全てを保持。描画対象はaccentCount個。
+      };
+    }
+
+    function shapeStyle(accent, color, bgColor, index) {
+      const size = accent.size;
+      const half = size / 2;
+      const strokeWidth = accentEffectiveStrokeWidth(accent, size);
+      const minimumStrokeWidth = accent.minStrokeWidth || 3;
+      const fill = accent.style === 'fill' ? color : 'none';
+      const stroke = accent.style === 'stroke' ? color : 'none';
+      const common = `fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth.toFixed(2)}" stroke-linejoin="round" stroke-linecap="round"`;
+      const p = accent.shapeBits;
+
+      switch (accent.type) {
+        case 'dot':
+          if (accent.style === 'fill') return `<circle r="${half}" fill="${color}"/>`;
+          return `<circle r="${half * 0.78}" fill="none" stroke="${color}" stroke-width="${strokeWidth}"/>`;
+
+        case 'ring': {
+          const outer = half;
+          const inner = outer * mapBitCodeToRange(p & 3, 2, 0.42, 0.57);
+          if (accent.style === 'stroke') {
+            const ringStrokeWidth = Math.max(minimumStrokeWidth, (strokeWidth - ACCENT_STROKE_BOOST) * 0.9) + ACCENT_STROKE_BOOST;
+            return `<circle r="${outer * 0.82}" fill="none" stroke="${color}" stroke-width="${ringStrokeWidth}"/>`;
+          }
+          return `<path d="M 0 ${-outer} A ${outer} ${outer} 0 1 1 0 ${outer} A ${outer} ${outer} 0 1 1 0 ${-outer} Z M 0 ${-inner} A ${inner} ${inner} 0 1 0 0 ${inner} A ${inner} ${inner} 0 1 0 0 ${-inner} Z" fill="${color}" fill-rule="evenodd"/>`;
+        }
+
+        case 'star': {
+          const points = mapBitCodeToRange(p & 3, 2, 5, 8);
+          const innerRatio = mapBitCodeToRange((p >>> 2) & 3, 2, 0.36, 0.64);
+          return `<path d="${regularStarPath(half, half * innerRatio, points)}" ${common}/>`;
+        }
+
+        case 'diamond': {
+          const aspect = mapBitCodeToRange(p, 4, 0.62, 1.20);
+          return `<path d="M 0 ${-half * aspect} L ${half} 0 L 0 ${half * aspect} L ${-half} 0 Z" ${common}/>`;
+        }
+
+        case 'triangle': {
+          const width = half * mapBitCodeToRange(p & 3, 2, 0.72, 1.20);
+          const height = half * mapBitCodeToRange((p >>> 2) & 3, 2, 0.78, 1.22);
+          return `<path d="M 0 ${-height} L ${width} ${height * 0.82} L ${-width} ${height * 0.82} Z" ${common}/>`;
+        }
+
+        case 'square': {
+          const aspect = mapBitCodeToRange(p & 7, 3, 0.78, 1.12);
+          const width = half * 2;
+          const height = width * aspect;
+          const radius = Math.min(width, height) * mapBitCodeToRange((p >>> 3) & 1, 1, 0, 0.24);
+          return `<rect x="${-width / 2}" y="${-height / 2}" width="${width}" height="${height}" rx="${radius}" ${common}/>`;
+        }
+
+        case 'heart': {
+          const width = half * mapBitCodeToRange(p & 3, 2, 0.88, 1.12);
+          const height = half * mapBitCodeToRange((p >>> 2) & 3, 2, 1.65, 1.93);
+          const w = width;
+          const h = height;
+          const d = `M 0 ${h * 0.43} C ${-w * 0.2} ${h * 0.23}, ${-w} ${-h * 0.08}, ${-w * 0.78} ${-h * 0.53} C ${-w * 0.6} ${-h * 0.93}, ${-w * 0.12} ${-h * 0.92}, 0 ${-h * 0.55} C ${w * 0.12} ${-h * 0.92}, ${w * 0.6} ${-h * 0.93}, ${w * 0.78} ${-h * 0.53} C ${w} ${-h * 0.08}, ${w * 0.2} ${h * 0.23}, 0 ${h * 0.43} Z`;
+          return `<path d="${d}" ${common}/>`;
+        }
+
+        case 'crescent': {
+          const variant = p & 1;
+          const thickness = mapBitCodeToRange((p >>> 1) & 3, 2, 0.16, 0.52);
+          const sweep = mapBitCodeToRange((p >>> 3) & 1, 1, 205, 340);
+          if (variant === 1) {
+            const start = -sweep / 2;
+            const end = sweep / 2;
+            const d = arcPath(half * (0.75 + thickness * 0.45), start, end);
+            const arcWidth = accentEffectiveStrokeWidth(accent, size);
+            return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${arcWidth}" stroke-linecap="round"/>`;
+          }
+          const maskId = `crescent-mask-${index}`;
+          const outerR = half;
+          const innerR = outerR * (0.88 - thickness * 0.2);
+          const shift = outerR * (0.22 + thickness * 0.9);
+          const mask = `<defs><mask id="${maskId}" maskUnits="userSpaceOnUse" x="${-size}" y="${-size}" width="${size * 2}" height="${size * 2}"><rect x="${-size}" y="${-size}" width="${size * 2}" height="${size * 2}" fill="black"/><circle r="${outerR}" fill="white"/><circle cx="${shift}" cy="0" r="${innerR}" fill="black"/></mask></defs>`;
+          if (accent.style === 'stroke') {
+            return `${mask}<circle r="${outerR}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" mask="url(#${maskId})"/>`;
+          }
+          return `${mask}<circle r="${outerR}" fill="${color}" mask="url(#${maskId})"/>`;
+        }
+
+        case 'sparkle': {
+          const innerRatio = mapBitCodeToRange(p & 3, 2, 0.12, 0.42);
+          const vertical = mapBitCodeToRange((p >>> 2) & 3, 2, 0.82, 1.18);
+          const d = `M 0 ${-half * vertical} Q ${half * innerRatio} ${-half * innerRatio} ${half} 0 Q ${half * innerRatio} ${half * innerRatio} 0 ${half * vertical} Q ${-half * innerRatio} ${half * innerRatio} ${-half} 0 Q ${-half * innerRatio} ${-half * innerRatio} 0 ${-half * vertical} Z`;
+          return `<path d="${d}" ${common}/>`;
+        }
+
+        case 'cross': {
+          const thickness = accentEffectiveStrokeWidth(accent, size);
+          const length = half * mapBitCodeToRange((p >>> 2) & 3, 2, 0.72, 1.00);
+          if (accent.style === 'fill') {
+            return `<path d="M ${-thickness / 2} ${-length} H ${thickness / 2} V ${-thickness / 2} H ${length} V ${thickness / 2} H ${thickness / 2} V ${length} H ${-thickness / 2} V ${thickness / 2} H ${-length} V ${-thickness / 2} H ${-thickness / 2} Z" fill="${color}"/>`;
+          }
+          return `<path d="M ${-length} 0 H ${length} M 0 ${-length} V ${length}" fill="none" stroke="${color}" stroke-width="${thickness}" stroke-linecap="round"/>`;
+        }
+
+        case 'mini-blob': {
+          const bits0 = p & 3;
+          const bits1 = (p >>> 2) & 3;
+          const bits2 = (bits0 + bits1) & 3;
+          const base = half * 0.76;
+          const radii = [
+            base * mapBitCodeToRange(bits0, 2, 0.86, 1.07),
+            base * mapBitCodeToRange(bits1, 2, 0.86, 1.07),
+            base * mapBitCodeToRange(bits2, 2, 0.86, 1.07),
+            base * mapBitCodeToRange(bits0, 2, 0.96, 1.068),
+            base * mapBitCodeToRange(bits1, 2, 0.96, 1.068),
+            base * mapBitCodeToRange(bits2, 2, 0.96, 1.068)
+          ];
+          const handles = radii.map(r => r * mapBitCodeToRange(bits1, 2, 0.48, 0.57));
+          const d = createOrganicBlobPath(0, 0, 6, radii, handles, false);
+          return `<path d="${d}" ${common}/>`;
+        }
+
+        default:
+          return `<circle r="${half}" fill="${color}"/>`;
+      }
+    }
+
+    function regularStarPath(outerRadius, innerRadius, points) {
+      const coords = [];
+      for (let i = 0; i < points * 2; i++) {
+        const angle = -Math.PI / 2 + (i * Math.PI) / points;
+        const radius = i % 2 === 0 ? outerRadius : innerRadius;
+        coords.push([Math.cos(angle) * radius, Math.sin(angle) * radius]);
+      }
+      return coords.map((point, i) => `${i === 0 ? 'M' : 'L'} ${point[0].toFixed(2)} ${point[1].toFixed(2)}`).join(' ') + ' Z';
+    }
+
+    function arcPath(radius, startDegrees, endDegrees) {
+      const start = startDegrees * Math.PI / 180;
+      const end = endDegrees * Math.PI / 180;
+      const x1 = radius * Math.cos(start);
+      const y1 = radius * Math.sin(start);
+      const x2 = radius * Math.cos(end);
+      const y2 = radius * Math.sin(end);
+      const sweep = endDegrees - startDegrees;
+      const largeArc = sweep > 180 ? 1 : 0;
+      return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${radius} ${radius} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+    }
+
+    /** Blueprintだけを受け取りSVG文字列を作る。ここではハッシュも乱数も使わない。 */
+    function renderBlueprintToSVG(blueprint) {
+      const {colors, main, negative, offset} = blueprint;
+      const cx = main.center.x;
+      const cy = main.center.y;
+      const mainPath = createOrganicBlobPath(cx, cy, main.pointsCount, main.radii, main.handles, true);
+      let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">`;
+      svg += `<g transform="rotate(${main.rotation} ${cx} ${cy})">`;
+
+      if (offset.enabled) {
+        svg += `<path d="${mainPath}" fill="${colors.offset || colors.accent}" transform="translate(${offset.x},${offset.y})"/>`;
+      }
+
+      svg += `<path d="${mainPath}" fill="${colors.main}"/>`;
+
+      if (negative.enabled) {
+        const negativePath = createOrganicBlobPath(cx, cy, main.pointsCount, negative.radii, negative.handles, true);
+        svg += `<path d="${negativePath}" fill="${colors.background}"/>`;
+      }
+
+      for (let i = 0; i < blueprint.accentCount; i++) {
+        const accent = blueprint.accents[i];
+        if (accent.visible === false) continue;
+        const color = accent.renderColor || colors[accent.color] || colors.main;
+        svg += `<g transform="translate(${accent.x} ${accent.y}) rotate(${accent.rotation})">`;
+        svg += shapeStyle(accent, color, colors.background, i);
+        svg += `</g>`;
+      }
+
+      svg += `</g></svg>`;
+      return svg;
+    }
+
+    async function hashInput(text) {
+      const input = new TextEncoder().encode(text);
+      const digest = await crypto.subtle.digest('SHA-512', input);
+      return new Uint8Array(digest);
+    }
+
+    let galleryRequestId = 0;
+
+
+    function makeGallerySeed(base, index) {
+      const normalizedBase = base.trim() || 'icon';
+      return `${normalizedBase}::gallery-${String(index + 1).padStart(3, '0')}`;
+    }
+
+    async function generateGallery() {
+      const requestId = ++galleryRequestId;
+      const base = performance.now() + "";
+      const count = 160;
+      const grid = document.getElementById('galleryGrid');
+      grid.replaceChildren();
+
+      // const fragment = document.createDocumentFragment();
+        // if (requestId === galleryRequestId) {
+        //   grid.append(fragment);
+        // }
+      try {
+        const ps = [];
+        for (let i = 0; i < count; i++) {
+          ps.push(
+            new Promise(async (res,rej) => {
+              if (requestId !== galleryRequestId) return;
+              const seed = makeGallerySeed(base, i);
+              const bytes = await hashInput(seed);
+              const blueprint = generateBlueprint(bytes);
+              const svg = renderBlueprintToSVG(blueprint);
+
+              const card = document.createElement('button');
+              card.type = 'button';
+              card.className = 'gallery-card';
+
+              const thumb = document.createElement('div');
+              thumb.className = 'gallery-thumb';
+              thumb.innerHTML = svg;
+
+              card.append(thumb);
+              grid.append(card);
+
+              res();
+            })
+          )
+        }
+        await Promise.all(ps);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      generateGallery();
+    }, {once: true});
+  </script>
+</body>
+
+</html>
