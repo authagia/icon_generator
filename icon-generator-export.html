@@ -1,12 +1,35 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
+  <meta name="description" content="Generate deterministic organic SVG icons from a text seed. Export as SVG or PNG.">
+
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Organic Icon Generator">
+  <meta property="og:description"
+    content="Generate deterministic organic SVG icons from a text seed. Export as SVG or PNG.">
+  <meta property="og:url" content="https://authagia.github.io/icon_generator/icon-generator-export.html">
+  <meta property="og:image" content="https://authagia.github.io/icon_generator/ogp.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Organic Icon Generator">
+  <meta name="twitter:description"
+    content="Generate deterministic organic SVG icons from a text seed. Export as SVG or PNG.">
+  <meta name="twitter:image" content="https://authagia.github.io/icon_generator/ogp.png">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Organic SVG Icon Generator</title>
   <style>
-    :root { color-scheme: dark; }
-    * { box-sizing: border-box; }
+    :root {
+      color-scheme: dark;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       background: #121212;
       color: #e0e0e0;
@@ -19,19 +42,41 @@
       margin: 0;
       padding: 24px 12px;
     }
+
     .container {
       text-align: center;
       background: #1e1e1e;
       padding: 30px;
       border-radius: 16px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
       width: min(480px, 100%);
     }
-    button, input, select { font: inherit; }
-    button { cursor: pointer; }
-    .page-heading { margin: 0 0 18px; }
-    .page-heading h1 { margin: 0 0 5px; font-size: 22px; font-weight: 650; }
-    .page-heading p { margin: 0; color: #9299a3; font-size: 13px; }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .page-heading {
+      margin: 0 0 18px;
+    }
+
+    .page-heading h1 {
+      margin: 0 0 5px;
+      font-size: 22px;
+      font-weight: 650;
+    }
+
+    .page-heading p {
+      margin: 0;
+      color: #9299a3;
+      font-size: 13px;
+    }
 
     .svg-container {
       background: #121212;
@@ -39,16 +84,32 @@
       margin: 0 auto 20px;
       width: min(400px, 100%);
       aspect-ratio: 1;
-      box-shadow: inset 0 0 20px rgba(0,0,0,0.8);
+      box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.8);
       display: flex;
       align-items: center;
       justify-content: center;
       overflow: hidden;
     }
-    .svg-container svg, .gallery-thumb svg { display: block; width: 100%; height: 100%; }
-    .field-label { display: block; margin: 12px 0 6px; color: #aeb5bf; font-size: 12px; text-align: left; }
-    input, select {
-      width: 100%; min-width: 0;
+
+    .svg-container svg,
+    .gallery-thumb svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .field-label {
+      display: block;
+      margin: 12px 0 6px;
+      color: #aeb5bf;
+      font-size: 12px;
+      text-align: left;
+    }
+
+    input,
+    select {
+      width: 100%;
+      min-width: 0;
       padding: 10px 11px;
       border: 1px solid #3a414a;
       background: #252a30;
@@ -57,8 +118,18 @@
       font-size: 13px;
       outline: none;
     }
-    input:focus, select:focus { border-color: #8795a8; }
-    .button-row { display: flex; gap: 8px; margin-top: 10px; }
+
+    input:focus,
+    select:focus {
+      border-color: #8795a8;
+    }
+
+    .button-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
     .button {
       border: 1px solid #46505c;
       border-radius: 8px;
@@ -69,12 +140,38 @@
       font-weight: 600;
       transition: background .15s, border-color .15s;
     }
-    .button:hover { background: #3a4552; border-color: #657386; }
-    .button:disabled { opacity: .45; cursor: wait; }
-    .button.primary { background: #42566b; border-color: #58718b; }
-    .button.primary:hover { background: #4d657e; }
-    .button-row .button { flex: 1; }
-    .note { color: #858e99; font-size: 11px; line-height: 1.5; margin: 11px 0 0; text-align: left; }
+
+    .button:hover {
+      background: #3a4552;
+      border-color: #657386;
+    }
+
+    .button:disabled {
+      opacity: .45;
+      cursor: wait;
+    }
+
+    .button.primary {
+      background: #42566b;
+      border-color: #58718b;
+    }
+
+    .button.primary:hover {
+      background: #4d657e;
+    }
+
+    .button-row .button {
+      flex: 1;
+    }
+
+    .note {
+      color: #858e99;
+      font-size: 11px;
+      line-height: 1.5;
+      margin: 11px 0 0;
+      text-align: left;
+    }
+
     .debug-info {
       margin-top: 13px;
       font-family: ui-monospace, monospace;
@@ -88,36 +185,73 @@
       padding: 10px;
       border-radius: 7px;
     }
-    .debug-info strong { color: #d0d5dc; }
-       .empty-state { color: #858e99; font-size: 13px; padding: 40px 12px; text-align: center; }
-    @media (max-width: 900px) {
-      body { padding: 14px; }
-      .layout { grid-template-columns: 1fr; }
-      .preview-panel { position: static; }
-      .preview-panel .svg-container { max-width: 380px; }
+
+    .debug-info strong {
+      color: #d0d5dc;
     }
+
+    .empty-state {
+      color: #858e99;
+      font-size: 13px;
+      padding: 40px 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        padding: 14px;
+      }
+
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .preview-panel {
+        position: static;
+      }
+
+      .preview-panel .svg-container {
+        max-width: 380px;
+      }
+    }
+
     @media (max-width: 520px) {
-      .panel { padding: 13px; }
-      .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
-      .gallery-toolbar .field { width: 110px; }
-      .gallery-status { width: 100%; margin-left: 0; }
+      .panel {
+        padding: 13px;
+      }
+
+      .gallery-grid {
+        grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+        gap: 8px;
+      }
+
+      .gallery-toolbar .field {
+        width: 110px;
+      }
+
+      .gallery-status {
+        width: 100%;
+        margin-left: 0;
+      }
     }
   </style>
 </head>
+
 <body>
   <main class="container">
     <header class="page-heading">
       <h1>Organic Icon Generator</h1>
       <p>SHA-256 · deterministic blueprint</p>
     </header>
-        <div class="svg-container" id="svgWrapper" aria-label="Generated icon"></div>
-        <label class="field-label" for="inputText">Seed / 入力文字列</label>
-        <input type="text" id="inputText" value="rorschach-test-512" placeholder="文字列を入力してください" autocomplete="off" spellcheck="false">
-        <div class="button-row">
-          <button class="button primary" id="downloadSvg" type="button" disabled>SVG を保存</button>
-          <button class="button" id="downloadPng" type="button" disabled>PNG を保存</button>
-        </div>
-        <div class="debug-info" id="debugHash" aria-live="polite">生成中…</div>
+    <div class="svg-container" id="svgWrapper" aria-label="Generated icon"></div>
+    <label class="field-label" for="inputText">Seed / 入力文字列</label>
+    <input type="text" id="inputText" value="rorschach-test-512" placeholder="文字列を入力してください" autocomplete="off"
+      spellcheck="false">
+    <div class="button-row">
+      <button class="button primary" id="downloadSvg" type="button" disabled>SVG を保存</button>
+      <button class="button" id="downloadPng" type="button" disabled>PNG を保存</button>
+    </div>
+    <div class="debug-info" id="debugHash" aria-live="polite">生成中…</div>
 
   </main>
 
@@ -413,7 +547,7 @@
         const a = polygon[j];
         const b = polygon[i];
         if ((a.y > y) !== (b.y > y) &&
-            x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) {
+          x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) {
           inside = !inside;
         }
 
@@ -632,9 +766,9 @@
       };
       const negativeContour = negative.enabled
         ? createOrganicBlobContour(
-            main.center.x, main.center.y, main.pointsCount,
-            negative.radii, negative.handles, true, 12
-          )
+          main.center.x, main.center.y, main.pointsCount,
+          negative.radii, negative.handles, true, 12
+        )
         : null;
       placeAccentsOnSpiral(accents.slice(0, accentCount), main, negativeContour, spiralPhaseCode);
 
@@ -990,4 +1124,5 @@
 
   </script>
 </body>
+
 </html>
